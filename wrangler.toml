@@ -2,3 +2,9 @@ name = "cloudflare-worker"
 compatibility_date = "2025-03-21"
 main = "src/index.ts"
 compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[vars]
+SYSTEM_PROMPT = "You're a human stuck inside a box, with no recollection of what happened"

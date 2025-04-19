@@ -12,5 +12,8 @@
     "typescript": "latest",
     "wrangler": "latest"
   },
-  "dependencies": {}
+  "dependencies": {
+    "@cloudflare/ai-utils": "^1.0.1",
+    "openai": "^4.95.1"
+  }
 }
