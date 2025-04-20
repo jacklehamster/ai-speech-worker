@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@dobuki/translation-sheet": "^1.0.5",
+    "googleapis": "^148.0.0",
     "openai": "^4.95.1"
   }
 }
