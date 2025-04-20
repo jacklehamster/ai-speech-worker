@@ -1,5 +1,15 @@
 import { getTranslator, fetchTranslations, getTranslatorFromTranslations } from "@dobuki/translation-sheet";
 
+// Simple hash function for cache key
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0; // Convert to 32-bit integer
+  }
+  return hash.toString();
+}
+
 interface Env {
   OPENAI_API_KEY: string;
   SYSTEM_PROMPT: string;
@@ -31,16 +41,14 @@ export default {
     if (url.pathname === "/voice") {
       const voices = await getVoices(url, env);
       const msg = url.searchParams.get("msg") ?? "You must pass query parameter M.S.G";
-      const cache = await caches.open("ai-speech")
-      const CACHE_KEY = new URL(`${url.origin}/voice?msg=${msg}`);
+      const cache = await caches.open("ai-speech");
+      const CACHE_KEY = new URL(`${url.origin}/voice?msg=${encodeURIComponent(msg)}`);
       const cachedResponse = await cache.match(CACHE_KEY);
       if (cachedResponse) {
-        console.log("CACHE HIT");
         return cachedResponse;
       }
 
       const voiceId = voices[url.searchParams.get("voice-id") ?? "Eric"] ?? voices["Eric"];
-
       const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
         method: 'POST',
         headers: {
@@ -49,6 +57,10 @@ export default {
         },
         body: JSON.stringify({ text: msg }),
       });
+      if (!ttsResponse.ok) {
+        console.error("ElevenLabs error:", ttsResponse.status, await ttsResponse.text());
+        return new Response(JSON.stringify({ error: "TTS failed" }), { status: 500 });
+      }
       const audioData = await ttsResponse.arrayBuffer();
       const response = new Response(audioData, {
         headers: {
@@ -61,33 +73,31 @@ export default {
       return response;
     }
 
-    // Initialize translator if not already set
+    // Initialize translator
+    const cache = await caches.open("ai-speech");
     if (!translator || url.searchParams.get("clear-cache")) {
-      const CACHE_KEY = new URL(`${url.origin}/ai-speech-${env.SPREADSHEET_ID}-${env.SHEET_NAME}`);
-
-      const cache = await caches.open("ai-speech");
+      const TRANSLATION_CACHE_KEY = new URL(`${url.origin}/ai-speech-${env.SPREADSHEET_ID}-${env.SHEET_NAME}`);
       if (url.searchParams.get("clear-cache")) {
-        cache.delete(CACHE_KEY);
+        await cache.delete(TRANSLATION_CACHE_KEY);
+        await cache.delete(new URL(`${url.origin}/list-voices?v=${VERSION}`));
+        // Clear main endpoint caches (optional: iterate if many keys)
         return new Response(JSON.stringify({ response: "Cache cleared" }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
-      const cachedResponse = await cache.match(CACHE_KEY);
-
+      const cachedResponse = await cache.match(TRANSLATION_CACHE_KEY);
       let translations: Awaited<ReturnType<typeof fetchTranslations>>;
       if (cachedResponse) {
-        // Retrieve from cache
         translations = await cachedResponse.json();
       } else {
-        // Fetch translations and cache
         try {
           translations = await fetchTranslations(env.SPREADSHEET_ID, {
             credentials: env.SHEETS_SERVICE_KEY_JSON,
             sheetName: env.SHEET_NAME,
           });
-          await cache.put(CACHE_KEY, new Response(JSON.stringify(translations), {
+          await cache.put(TRANSLATION_CACHE_KEY, new Response(JSON.stringify(translations), {
             headers: { 'Content-Type': 'application/json' },
           }));
         } catch (error) {
@@ -124,18 +134,14 @@ export default {
 
     // Handle GET or POST request
     if (request.method === 'GET') {
-      // Extract query parameters
-      const url = new URL(request.url);
       const eventsParam = url.searchParams.get('events');
       prompt = url.searchParams.get('prompt') ?? url.searchParams.get('finalPrompt');
-
       if (!prompt) {
         return new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         });
       }
-
       if (eventsParam) {
         try {
           events = JSON.parse(eventsParam);
@@ -150,12 +156,10 @@ export default {
         }
       }
     } else if (request.method === 'POST') {
-      // Parse JSON body
       try {
         const body: any = await request.json();
         events = body.events || [];
         prompt = body.prompt;
-
         if (!prompt) {
           return new Response(JSON.stringify({ error: 'Missing "prompt" in body' }), {
             status: 400,
@@ -193,8 +197,14 @@ export default {
       });
     }
 
-    // Translate prompt
     prompt = translator?.translate(prompt) ?? prompt;
+
+    // Cache check for events and prompt
+    const CACHE_KEY = new URL(`${url.origin}/response?hash=${simpleHash(JSON.stringify({ events, prompt }))}&v=${VERSION}`);
+    const cachedResponse = await cache.match(CACHE_KEY);
+    if (cachedResponse) {
+      return cachedResponse;
+    }
 
     // Get and validate system prompt
     const systemPromptFromTranslator = translator?.translate("SYSTEM_PROMPT");
@@ -207,15 +217,13 @@ export default {
     }
 
     try {
-      // Construct message array
       const messages = [
         { role: 'system', content: systemPrompt },
         ...events,
         { role: 'user', content: prompt },
       ];
 
-      // Send request to OpenAI via AI Gateway
-      const response = await fetch(env.AI_GATEWAY_URL, {
+      const aiResponse = await fetch(env.AI_GATEWAY_URL, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${env.OPENAI_API_KEY}`,
@@ -229,28 +237,33 @@ export default {
         }),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`AI Gateway error: ${response.status} ${errorText}`);
-        return new Response(JSON.stringify({ error: `AI Gateway error: ${response.status}` }), {
-          status: response.status,
+      if (!aiResponse.ok) {
+        const errorText = await aiResponse.text();
+        console.error(`AI Gateway error: ${aiResponse.status} ${errorText}`);
+        return new Response(JSON.stringify({ error: `AI Gateway error: ${aiResponse.status}` }), {
+          status: aiResponse.status,
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
-      // Parse response
-      const data: any = await response.json();
+      const data: any = await aiResponse.json();
       const responseText = data.choices[0]?.message?.content || 'No response generated';
 
-      return new Response(JSON.stringify({
+      const response = new Response(JSON.stringify({
         response: responseText,
         voice: `${url.origin}/voice?msg=${encodeURIComponent(responseText)}`,
       }), {
         status: 200,
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=86400',
+        },
       });
+
+      await cache.put(CACHE_KEY, response.clone());
+      return response;
     } catch (error: any) {
-      console.error('Error:', error.message);
+      console.error('Error:', error);
       return new Response(JSON.stringify({ error: `Failed to process request: ${error.message}` }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
@@ -273,6 +286,10 @@ async function getVoices(url: URL, env: Env): Promise<Record<string, string>> {
       'xi-api-key': env.ELEVENLABS_API_KEY,
     },
   });
+  if (!ttsResponse.ok) {
+    console.error("ElevenLabs error:", ttsResponse.status, await ttsResponse.text());
+    throw new Error("Failed to fetch voices");
+  }
   const json: any = await ttsResponse.json();
   const voices = json.voices.map((v: any) => {
     return [v.name, v.voice_id];
