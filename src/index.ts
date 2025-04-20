@@ -127,7 +127,7 @@ export default {
       // Extract query parameters
       const url = new URL(request.url);
       const eventsParam = url.searchParams.get('events');
-      prompt = url.searchParams.get('prompt');
+      prompt = url.searchParams.get('prompt') ?? url.searchParams.get('finalPrompt');
 
       if (!prompt) {
         return new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
@@ -242,7 +242,10 @@ export default {
       const data: any = await response.json();
       const responseText = data.choices[0]?.message?.content || 'No response generated';
 
-      return new Response(JSON.stringify({ response: responseText }), {
+      return new Response(JSON.stringify({
+        response: responseText,
+        voice: `${url.origin}/voice?msg=${encodeURIComponent(responseText)}`,
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
