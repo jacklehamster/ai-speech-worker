@@ -1,4 +1,4 @@
-import { getTranslator } from "@dobuki/translation-sheet";
+import { getTranslator, fetchTranslations, getTranslatorFromTranslations } from "@dobuki/translation-sheet";
 
 interface Env {
   OPENAI_API_KEY: string;
@@ -14,14 +14,51 @@ let translator: Awaited<ReturnType<typeof getTranslator>>;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname === '/favicon.ico') {
+      return Response.redirect("https://jacklehamster.github.io/ai-speech-worker/icon.png");
+    }
+
     // Initialize translator if not already set
-    if (!translator) {
-      try {
-        translator = await getTranslator({
-          sheetName: env.SHEET_NAME,
-          sheetId: env.SPREADSHEET_ID,
-          credentials: env.SHEETS_SERVICE_KEY_JSON,
+    if (!translator || url.searchParams.get("clear-cache")) {
+      const CACHE_KEY = new URL(`${url.origin}/ai-speech-${env.SPREADSHEET_ID}-${env.SHEET_NAME}`);
+
+      const cache = await caches.open("ai-speech");
+      if (url.searchParams.get("clear-cache")) {
+        cache.delete(CACHE_KEY);
+        return new Response(JSON.stringify({ response: "Cache cleared" }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
         });
+      }
+
+      const cachedResponse = await cache.match(CACHE_KEY);
+
+      let translations: Awaited<ReturnType<typeof fetchTranslations>>;
+      if (cachedResponse) {
+        // Retrieve from cache
+        translations = await cachedResponse.json();
+      } else {
+        // Fetch translations and cache
+        try {
+          translations = await fetchTranslations(env.SPREADSHEET_ID, {
+            credentials: env.SHEETS_SERVICE_KEY_JSON,
+            sheetName: env.SHEET_NAME,
+          });
+          await cache.put(CACHE_KEY, new Response(JSON.stringify(translations), {
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        } catch (error) {
+          console.error('Translator initialization failed:', error);
+          return new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      try {
+        translator = await getTranslatorFromTranslations(translations?.[env.SHEET_NAME]);
       } catch (error) {
         console.error('Translator initialization failed:', error);
         return new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
