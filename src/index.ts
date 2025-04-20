@@ -8,15 +8,57 @@ interface Env {
   SHEETS_SERVICE_KEY_JSON: string;
   SPREADSHEET_ID: string;
   SHEET_NAME: string;
+  ELEVENLABS_API_KEY: string;
 }
 
 let translator: Awaited<ReturnType<typeof getTranslator>>;
+
+const VERSION = "1.0.0";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === '/favicon.ico') {
       return Response.redirect("https://jacklehamster.github.io/ai-speech-worker/icon.png");
+    }
+
+    if (url.pathname === "/list-voices") {
+      return new Response(JSON.stringify(await getVoices(url, env)), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (url.pathname === "/voice") {
+      const voices = await getVoices(url, env);
+      const msg = url.searchParams.get("msg") ?? "You must pass query parameter M.S.G";
+      const cache = await caches.open("ai-speech")
+      const CACHE_KEY = new URL(`${url.origin}/voice?msg=${msg}`);
+      const cachedResponse = await cache.match(CACHE_KEY);
+      if (cachedResponse) {
+        console.log("CACHE HIT");
+        return cachedResponse;
+      }
+
+      const voiceId = voices[url.searchParams.get("voice-id") ?? "Eric"] ?? voices["Eric"];
+
+      const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+        method: 'POST',
+        headers: {
+          'xi-api-key': env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ text: msg }),
+      });
+      const audioData = await ttsResponse.arrayBuffer();
+      const response = new Response(audioData, {
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'X-Response-Text': msg,
+          'Cache-Control': 'max-age=86400',
+        },
+      });
+      await cache.put(CACHE_KEY, response.clone());
+      return response;
     }
 
     // Initialize translator if not already set
@@ -78,17 +120,17 @@ export default {
     }
 
     let events: any[] = [];
-    let finalPrompt: string | null = null;
+    let prompt: string | null = null;
 
     // Handle GET or POST request
     if (request.method === 'GET') {
       // Extract query parameters
       const url = new URL(request.url);
       const eventsParam = url.searchParams.get('events');
-      finalPrompt = url.searchParams.get('finalPrompt');
+      prompt = url.searchParams.get('prompt');
 
-      if (!finalPrompt) {
-        return new Response(JSON.stringify({ error: 'Missing "finalPrompt" query parameter' }), {
+      if (!prompt) {
+        return new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -112,10 +154,10 @@ export default {
       try {
         const body: any = await request.json();
         events = body.events || [];
-        finalPrompt = body.finalPrompt;
+        prompt = body.prompt;
 
-        if (!finalPrompt) {
-          return new Response(JSON.stringify({ error: 'Missing "finalPrompt" in body' }), {
+        if (!prompt) {
+          return new Response(JSON.stringify({ error: 'Missing "prompt" in body' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
           });
@@ -151,8 +193,8 @@ export default {
       });
     }
 
-    // Translate finalPrompt
-    finalPrompt = translator?.translate(finalPrompt) ?? finalPrompt;
+    // Translate prompt
+    prompt = translator?.translate(prompt) ?? prompt;
 
     // Get and validate system prompt
     const systemPromptFromTranslator = translator?.translate("SYSTEM_PROMPT");
@@ -169,7 +211,7 @@ export default {
       const messages = [
         { role: 'system', content: systemPrompt },
         ...events,
-        { role: 'user', content: finalPrompt },
+        { role: 'user', content: prompt },
       ];
 
       // Send request to OpenAI via AI Gateway
@@ -213,3 +255,31 @@ export default {
     }
   },
 };
+
+async function getVoices(url: URL, env: Env): Promise<Record<string, string>> {
+  const cache = await caches.open("ai-speech");
+  const CACHE_KEY = new URL(`${url.origin}/list-voices?v=${VERSION}`);
+  const cachedResponse = await cache.match(CACHE_KEY);
+  if (cachedResponse) {
+    return await cachedResponse.json();
+  }
+
+  const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/voices`, {
+    method: "GET",
+    headers: {
+      'xi-api-key': env.ELEVENLABS_API_KEY,
+    },
+  });
+  const json: any = await ttsResponse.json();
+  const voices = json.voices.map((v: any) => {
+    return [v.name, v.voice_id];
+  });
+  const voiceMap = Object.fromEntries(voices);
+  await cache.put(CACHE_KEY, new Response(JSON.stringify(voiceMap), {
+    headers: {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'max-age=86400',
+    },
+  }));
+  return voiceMap;
+}
