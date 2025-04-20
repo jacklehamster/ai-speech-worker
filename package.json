@@ -13,7 +13,7 @@
     "wrangler": "^4.12.0"
   },
   "dependencies": {
-    "@cloudflare/ai-utils": "^1.0.1",
+    "@dobuki/translation-sheet": "^1.0.5",
     "openai": "^4.95.1"
   }
 }

@@ -1,9 +1,16 @@
+import { getTranslator } from "@dobuki/translation-sheet";
+
 interface Env {
   OPENAI_API_KEY: string;
   SYSTEM_PROMPT: string;
   AI_GATEWAY_TOKEN: string;
   AI_GATEWAY_URL: string;
+  SHEETS_SERVICE_KEY_JSON: string;
+  SPREADSHEET_ID: string;
+  SHEET_NAME: string;
 }
+
+let translator: Awaited<ReturnType<typeof getTranslator>>;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -12,10 +19,18 @@ export default {
       return new Response('Method Not Allowed', { status: 405 });
     }
 
+    if (!translator) {
+      translator = await getTranslator({
+        sheetName: env.SHEET_NAME,
+        sheetId: env.SPREADSHEET_ID,
+        credentials: env.SHEETS_SERVICE_KEY_JSON,
+      });
+    }
+
     // Extract query parameters
     const url = new URL(request.url);
     const eventsParam = url.searchParams.get('events');
-    const finalPrompt = url.searchParams.get('finalPrompt');
+    let finalPrompt = url.searchParams.get('finalPrompt');
 
     // Validate parameters
     if (!finalPrompt) {
@@ -24,6 +39,7 @@ export default {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    finalPrompt = translator?.translate(finalPrompt) ?? finalPrompt;
 
     let events = [];
     if (eventsParam) {
@@ -37,6 +53,7 @@ export default {
           if (!event.role || !event.content) {
             throw new Error('Each event must have "role" and "content"');
           }
+          event.content = translator?.translate(event.content) ?? event.content;
         });
       } catch (error: any) {
         return new Response(JSON.stringify({ error: `Invalid "events" format: ${error.message}` }), {
@@ -46,8 +63,12 @@ export default {
       }
     }
 
+    const sytemPromptFromTranslator = translator?.translate("SYSTEM_PROMPT");
+    const systemPrompt = (sytemPromptFromTranslator !== "SYSTEM_PROMPT" ? sytemPromptFromTranslator : env.SYSTEM_PROMPT) ?? env.SYSTEM_PROMPT;
+    console.log(sytemPromptFromTranslator);
+    console.log(systemPrompt);
     // Validate system prompt
-    if (!env.SYSTEM_PROMPT) {
+    if (!systemPrompt) {
       return new Response(JSON.stringify({ error: 'System prompt not configured' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
@@ -57,7 +78,7 @@ export default {
     try {
       // Construct message array
       const messages = [
-        { role: 'system', content: env.SYSTEM_PROMPT },
+        { role: 'system', content: systemPrompt },
         ...events,
         { role: 'user', content: finalPrompt },
       ];
