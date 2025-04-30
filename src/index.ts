@@ -28,6 +28,12 @@ const VERSION = "1.0.1";
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // Handle preflight OPTIONS requests
+    if (request.method === 'OPTIONS') {
+      return addCorsHeaders(new Response(null, { status: 204 }));
+    }
+
     if (url.pathname === '/favicon.ico') {
       return Response.redirect("https://jacklehamster.github.io/ai-speech-worker/icon.png");
     }
@@ -45,7 +51,7 @@ export default {
       const CACHE_KEY = new URL(`${url.origin}/voice?msg=${encodeURIComponent(msg)}`);
       const cachedResponse = await cache.match(CACHE_KEY);
       if (cachedResponse) {
-        return cachedResponse;
+        return addCorsHeaders(cachedResponse); // Add CORS headers to cached response
       }
 
       const voiceId = voices[url.searchParams.get("voice-id") ?? "Eric"] ?? voices["Eric"];
@@ -80,11 +86,10 @@ export default {
       if (url.searchParams.get("clear-cache")) {
         await cache.delete(TRANSLATION_CACHE_KEY);
         await cache.delete(new URL(`${url.origin}/list-voices?v=${VERSION}`));
-        // Clear main endpoint caches (optional: iterate if many keys)
-        return new Response(JSON.stringify({ response: "Cache cleared" }), {
+        return addCorsHeaders(new Response(JSON.stringify({ response: "Cache cleared" }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
-        });
+        }));
       }
 
       const cachedResponse = await cache.match(TRANSLATION_CACHE_KEY);
@@ -102,10 +107,10 @@ export default {
           }));
         } catch (error) {
           console.error('Translator initialization failed:', error);
-          return new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
+          return addCorsHeaders(new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
             status: 500,
             headers: { 'Content-Type': 'application/json' },
-          });
+          }));
         }
       }
 
@@ -113,20 +118,20 @@ export default {
         translator = await getTranslatorFromTranslations(translations?.[env.SHEET_NAME]);
       } catch (error) {
         console.error('Translator initialization failed:', error);
-        return new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
+        return addCorsHeaders(new Response(JSON.stringify({ error: 'Failed to initialize translator' }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' },
-        });
+        }));
       }
     }
 
     // Validate environment variables
     if (!env.OPENAI_API_KEY || !env.AI_GATEWAY_TOKEN || !env.AI_GATEWAY_URL || !env.SYSTEM_PROMPT) {
       console.error('Missing environment variables');
-      return new Response(JSON.stringify({ error: 'Server configuration error' }), {
+      return addCorsHeaders(new Response(JSON.stringify({ error: 'Server configuration error' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
-      });
+      }));
     }
 
     let events: any[] = [];
@@ -137,10 +142,10 @@ export default {
       const eventsParam = url.searchParams.get('events');
       prompt = url.searchParams.get('prompt') ?? url.searchParams.get('finalPrompt');
       if (!prompt) {
-        return new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
+        return addCorsHeaders(new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
-        });
+        }));
       }
       if (eventsParam) {
         try {
@@ -149,10 +154,10 @@ export default {
             throw new Error('Events must be an array');
           }
         } catch (error: any) {
-          return new Response(JSON.stringify({ error: `Invalid "events" format: ${error.message}` }), {
+          return addCorsHeaders(new Response(JSON.stringify({ error: `Invalid "events" format: ${error.message}` }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
-          });
+          }));
         }
       }
     } else if (request.method === 'POST') {
@@ -161,25 +166,25 @@ export default {
         events = body.events || [];
         prompt = body.prompt;
         if (!prompt) {
-          return new Response(JSON.stringify({ error: 'Missing "prompt" in body' }), {
+          return addCorsHeaders(new Response(JSON.stringify({ error: 'Missing "prompt" in body' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
-          });
+          }));
         }
         if (!Array.isArray(events)) {
-          return new Response(JSON.stringify({ error: 'Events must be an array' }), {
+          return addCorsHeaders(new Response(JSON.stringify({ error: 'Events must be an array' }), {
             status: 400,
             headers: { 'Content-Type': 'application/json' },
-          });
+          }));
         }
       } catch (error: any) {
-        return new Response(JSON.stringify({ error: `Invalid JSON body: ${error.message}` }), {
+        return addCorsHeaders(new Response(JSON.stringify({ error: `Invalid JSON body: ${error.message}` }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
-        });
+        }));
       }
     } else {
-      return new Response('Method Not Allowed', { status: 405 });
+      return addCorsHeaders(new Response('Method Not Allowed', { status: 405 }));
     }
 
     // Validate and translate events
@@ -191,10 +196,10 @@ export default {
         event.content = translator?.translate(event.content) ?? event.content;
       });
     } catch (error: any) {
-      return new Response(JSON.stringify({ error: `Invalid "events" format: ${error.message}` }), {
+      return addCorsHeaders(new Response(JSON.stringify({ error: `Invalid "events" format: ${error.message}` }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
-      });
+      }));
     }
 
     prompt = translator?.translate(prompt) ?? prompt;
@@ -203,17 +208,17 @@ export default {
     const CACHE_KEY = new URL(`${url.origin}/response?hash=${simpleHash(JSON.stringify({ events, prompt }))}&v=${VERSION}`);
     const cachedResponse = await cache.match(CACHE_KEY);
     if (cachedResponse) {
-      return cachedResponse;
+      return addCorsHeaders(cachedResponse); // Add CORS headers to cached response
     }
 
     // Get and validate system prompt
     const systemPromptFromTranslator = translator?.translate("SYSTEM_PROMPT");
     const systemPrompt = (systemPromptFromTranslator !== "SYSTEM_PROMPT" ? systemPromptFromTranslator : env.SYSTEM_PROMPT) ?? env.SYSTEM_PROMPT;
     if (!systemPrompt) {
-      return new Response(JSON.stringify({ error: 'System prompt not configured' }), {
+      return addCorsHeaders(new Response(JSON.stringify({ error: 'System prompt not configured' }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
-      });
+      }));
     }
 
     try {
@@ -240,10 +245,10 @@ export default {
       if (!aiResponse.ok) {
         const errorText = await aiResponse.text();
         console.error(`AI Gateway error: ${aiResponse.status} ${errorText}`);
-        return new Response(JSON.stringify({ error: `AI Gateway error: ${aiResponse.status}` }), {
+        return addCorsHeaders(new Response(JSON.stringify({ error: `AI Gateway error: ${aiResponse.status}` }), {
           status: aiResponse.status,
           headers: { 'Content-Type': 'application/json' },
-        });
+        }));
       }
 
       const data: any = await aiResponse.json();
@@ -264,10 +269,10 @@ export default {
       return response;
     } catch (error: any) {
       console.error('Error:', error);
-      return new Response(JSON.stringify({ error: `Failed to process request: ${error.message}` }), {
+      return addCorsHeaders(new Response(JSON.stringify({ error: `Failed to process request: ${error.message}` }), {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
-      });
+      }));
     }
   },
 };
