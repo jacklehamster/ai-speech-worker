@@ -23,7 +23,7 @@ interface Env {
 
 let translator: Awaited<ReturnType<typeof getTranslator>>;
 
-const VERSION = "1.0.0";
+const VERSION = "1.0.1";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -33,9 +33,9 @@ export default {
     }
 
     if (url.pathname === "/list-voices") {
-      return new Response(JSON.stringify(await getVoices(url, env)), {
+      return addCorsHeaders(new Response(JSON.stringify(await getVoices(url, env)), {
         headers: { 'Content-Type': 'application/json' },
-      });
+      }));
     }
 
     if (url.pathname === "/voice") {
@@ -59,16 +59,16 @@ export default {
       });
       if (!ttsResponse.ok) {
         console.error("ElevenLabs error:", ttsResponse.status, await ttsResponse.text());
-        return new Response(JSON.stringify({ error: "TTS failed" }), { status: 500 });
+        return addCorsHeaders(new Response(JSON.stringify({ error: "TTS failed" }), { status: 500 }));
       }
       const audioData = await ttsResponse.arrayBuffer();
-      const response = new Response(audioData, {
+      const response = addCorsHeaders(new Response(audioData, {
         headers: {
           'Content-Type': 'audio/mpeg',
           'X-Response-Text': msg,
           'Cache-Control': 'max-age=86400',
         },
-      });
+      }));
       await cache.put(CACHE_KEY, response.clone());
       return response;
     }
@@ -249,7 +249,7 @@ export default {
       const data: any = await aiResponse.json();
       const responseText = data.choices[0]?.message?.content || 'No response generated';
 
-      const response = new Response(JSON.stringify({
+      const response = addCorsHeaders(new Response(JSON.stringify({
         response: responseText,
         voice: `${url.origin}/voice?msg=${encodeURIComponent(responseText)}`,
       }), {
@@ -258,7 +258,7 @@ export default {
           'Content-Type': 'application/json',
           'Cache-Control': 'max-age=86400',
         },
-      });
+      }));
 
       await cache.put(CACHE_KEY, response.clone());
       return response;
@@ -302,4 +302,12 @@ async function getVoices(url: URL, env: Env): Promise<Record<string, string>> {
     },
   }));
   return voiceMap;
+}
+
+function addCorsHeaders(response: Response, origin: string = '*'): Response {
+  const newResponse = new Response(response.body, response);
+  newResponse.headers.set('Access-Control-Allow-Origin', origin);
+  newResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  newResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  return newResponse;
 }
