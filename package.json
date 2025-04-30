@@ -10,11 +10,11 @@
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
     "typescript": "latest",
-    "wrangler": "^4.12.0"
+    "wrangler": "^4.13.2"
   },
   "dependencies": {
     "@dobuki/translation-sheet": "^1.0.5",
     "googleapis": "^148.0.0",
-    "openai": "^4.95.1"
+    "openai": "^4.96.2"
   }
 }
