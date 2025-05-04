@@ -18,12 +18,11 @@ interface Env {
   SHEETS_SERVICE_KEY_JSON: string;
   SPREADSHEET_ID: string;
   SHEET_NAME: string;
-  ELEVENLABS_API_KEY: string;
 }
 
 let translator: Awaited<ReturnType<typeof getTranslator>>;
 
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -36,47 +35,6 @@ export default {
 
     if (url.pathname === '/favicon.ico') {
       return Response.redirect("https://jacklehamster.github.io/ai-speech-worker/icon.png");
-    }
-
-    if (url.pathname === "/list-voices") {
-      return addCorsHeaders(new Response(JSON.stringify(await getVoices(url, env)), {
-        headers: { 'Content-Type': 'application/json' },
-      }));
-    }
-
-    if (url.pathname === "/voice") {
-      const voices = await getVoices(url, env);
-      const msg = url.searchParams.get("msg") ?? "You must pass query parameter M.S.G";
-      const cache = await caches.open("ai-speech");
-      const CACHE_KEY = new URL(`${url.origin}/voice?msg=${encodeURIComponent(msg)}`);
-      const cachedResponse = await cache.match(CACHE_KEY);
-      if (cachedResponse) {
-        return addCorsHeaders(cachedResponse); // Add CORS headers to cached response
-      }
-
-      const voiceId = voices[url.searchParams.get("voice-id") ?? "Eric"] ?? voices["Eric"];
-      const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-        method: 'POST',
-        headers: {
-          'xi-api-key': env.ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ text: msg }),
-      });
-      if (!ttsResponse.ok) {
-        console.error("ElevenLabs error:", ttsResponse.status, await ttsResponse.text());
-        return addCorsHeaders(new Response(JSON.stringify({ error: "TTS failed" }), { status: 500 }));
-      }
-      const audioData = await ttsResponse.arrayBuffer();
-      const response = addCorsHeaders(new Response(audioData, {
-        headers: {
-          'Content-Type': 'audio/mpeg',
-          'X-Response-Text': msg,
-          'Cache-Control': 'max-age=86400',
-        },
-      }));
-      await cache.put(CACHE_KEY, response.clone());
-      return response;
     }
 
     // Initialize translator
@@ -126,7 +84,7 @@ export default {
     }
 
     // Validate environment variables
-    if (!env.OPENAI_API_KEY || !env.AI_GATEWAY_TOKEN || !env.AI_GATEWAY_URL || !env.SYSTEM_PROMPT) {
+    if (!env.OPENAI_API_KEY || !env.AI_GATEWAY_TOKEN || !env.AI_GATEWAY_URL) {
       console.error('Missing environment variables');
       return addCorsHeaders(new Response(JSON.stringify({ error: 'Server configuration error' }), {
         status: 500,
@@ -210,10 +168,11 @@ export default {
     if (cachedResponse) {
       return addCorsHeaders(cachedResponse); // Add CORS headers to cached response
     }
+    const systemPromptParam = url.searchParams.get("system-prompt") ?? "SYSTEM_PROMPT";
 
     // Get and validate system prompt
-    const systemPromptFromTranslator = translator?.translate("SYSTEM_PROMPT");
-    const systemPrompt = (systemPromptFromTranslator !== "SYSTEM_PROMPT" ? systemPromptFromTranslator : env.SYSTEM_PROMPT) ?? env.SYSTEM_PROMPT;
+    const systemPromptFromTranslator = translator?.translate(systemPromptParam);
+    const systemPrompt = (systemPromptFromTranslator !== systemPromptParam ? systemPromptFromTranslator : env.SYSTEM_PROMPT) ?? env.SYSTEM_PROMPT;
     if (!systemPrompt) {
       return addCorsHeaders(new Response(JSON.stringify({ error: 'System prompt not configured' }), {
         status: 500,
@@ -256,7 +215,7 @@ export default {
 
       const response = addCorsHeaders(new Response(JSON.stringify({
         response: responseText,
-        voice: `${url.origin}/voice?msg=${encodeURIComponent(responseText)}`,
+        // voice: `${url.origin}/voice?msg=${encodeURIComponent(responseText)}`,
       }), {
         status: 200,
         headers: {
@@ -276,38 +235,6 @@ export default {
     }
   },
 };
-
-async function getVoices(url: URL, env: Env): Promise<Record<string, string>> {
-  const cache = await caches.open("ai-speech");
-  const CACHE_KEY = new URL(`${url.origin}/list-voices?v=${VERSION}`);
-  const cachedResponse = await cache.match(CACHE_KEY);
-  if (cachedResponse) {
-    return await cachedResponse.json();
-  }
-
-  const ttsResponse = await fetch(`https://api.elevenlabs.io/v1/voices`, {
-    method: "GET",
-    headers: {
-      'xi-api-key': env.ELEVENLABS_API_KEY,
-    },
-  });
-  if (!ttsResponse.ok) {
-    console.error("ElevenLabs error:", ttsResponse.status, await ttsResponse.text());
-    throw new Error("Failed to fetch voices");
-  }
-  const json: any = await ttsResponse.json();
-  const voices = json.voices.map((v: any) => {
-    return [v.name, v.voice_id];
-  });
-  const voiceMap = Object.fromEntries(voices);
-  await cache.put(CACHE_KEY, new Response(JSON.stringify(voiceMap), {
-    headers: {
-      'Content-Type': 'application/json',
-      'Cache-Control': 'max-age=86400',
-    },
-  }));
-  return voiceMap;
-}
 
 function addCorsHeaders(response: Response, origin: string = '*'): Response {
   const newResponse = new Response(response.body, response);
