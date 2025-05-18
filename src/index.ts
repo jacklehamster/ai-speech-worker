@@ -100,7 +100,7 @@ export default {
       const eventsParam = url.searchParams.get('events');
       prompt = url.searchParams.get('prompt') ?? url.searchParams.get('finalPrompt');
       if (!prompt) {
-        return addCorsHeaders(new Response(JSON.stringify({ error: 'Missing "prompt" query parameter' }), {
+        return addCorsHeaders(new Response(JSON.stringify({ error: 'Missing [prompt] query parameter. Optional [system-prompt] paramter.' }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
         }));
@@ -187,6 +187,17 @@ export default {
         { role: 'user', content: prompt },
       ];
 
+      const imageResponse = await handleImages({
+        url,
+        env,
+        prompt,
+        cache,
+        CACHE_KEY,
+      });
+      if (imageResponse) {
+        return imageResponse;
+      }
+
       const aiResponse = await fetch(env.AI_GATEWAY_URL, {
         method: 'POST',
         headers: {
@@ -242,4 +253,72 @@ function addCorsHeaders(response: Response, origin: string = '*'): Response {
   newResponse.headers.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   newResponse.headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   return newResponse;
+}
+
+async function handleImages({
+  url, env, prompt, cache, CACHE_KEY,
+}: { url: URL, env: Env, prompt: string, cache: Cache, CACHE_KEY: URL }) {
+  const generateImage = url.searchParams.get("generateImage") === "true";
+  if (generateImage) {
+    const imageSize = url.searchParams.get("imageSize") ?? "256x256";
+    const imageCount = Math.min(parseInt(url.searchParams.get("imageCount") || "1", 10), 10);
+
+    const allowedSizes = new Set(["256x256", "512x512", "1024x1024"]);
+    if (!allowedSizes.has(imageSize)) {
+      return addCorsHeaders(new Response(JSON.stringify({
+        error: `Invalid image size "${imageSize}". Allowed: 256x256, 512x512, 1024x1024`
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+
+    try {
+      const imageResponse = await fetch("https://api.openai.com/v1/images/generations", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${env.OPENAI_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt,
+          n: imageCount,
+          size: imageSize,
+        }),
+      });
+
+      if (!imageResponse.ok) {
+        const errorText = await imageResponse.text();
+        console.error(`Image generation error: ${imageResponse.status} ${errorText}`);
+        return addCorsHeaders(new Response(JSON.stringify({ error: `Image generation failed` }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+
+      const imageData: any = await imageResponse.json();
+      const imageUrls = imageData.data?.map((item: any) => item.url) ?? [];
+
+      const response = addCorsHeaders(new Response(JSON.stringify({
+        prompt,
+        images: imageUrls,
+      }), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'max-age=86400',
+        },
+      }));
+
+      await cache.put(CACHE_KEY, response.clone());
+      return response;
+
+    } catch (err: any) {
+      console.error("Image generation failed:", err);
+      return addCorsHeaders(new Response(JSON.stringify({ error: "Unexpected error generating image" }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
+  }
 }
