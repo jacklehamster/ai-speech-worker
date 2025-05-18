@@ -22,7 +22,7 @@ interface Env {
 
 let translator: Awaited<ReturnType<typeof getTranslator>>;
 
-const VERSION = "1.0.2";
+const VERSION = "1.0.4";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -181,12 +181,6 @@ export default {
     }
 
     try {
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        ...events,
-        { role: 'user', content: prompt },
-      ];
-
       const imageResponse = await handleImages({
         url,
         env,
@@ -197,6 +191,12 @@ export default {
       if (imageResponse) {
         return imageResponse;
       }
+
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...events,
+        { role: 'user', content: prompt },
+      ];
 
       const aiResponse = await fetch(env.AI_GATEWAY_URL, {
         method: 'POST',
@@ -299,20 +299,34 @@ async function handleImages({
       const imageData: any = await imageResponse.json();
       const imageUrls = imageData.data?.map((item: any) => item.url) ?? [];
 
-      const response = addCorsHeaders(new Response(JSON.stringify({
-        prompt,
-        images: imageUrls,
-      }), {
-        status: 200,
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'max-age=86400',
-        },
-      }));
+      const imageUrl = imageUrls[0];
 
-      await cache.put(CACHE_KEY, response.clone());
-      return response;
-
+      if (imageUrl) {
+        // Fetch the image binary data
+        const imgFetch = await fetch(imageUrl);
+        if (!imgFetch.ok) {
+          return addCorsHeaders(new Response(JSON.stringify({ error: "Failed to fetch generated image" }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+        // Clone the response so we can cache it and return it
+        const imgBlob = await imgFetch.blob();
+        const imgResponse = addCorsHeaders(new Response(imgBlob, {
+          status: 200,
+          headers: {
+            'Content-Type': imgFetch.headers.get('Content-Type') || 'image/png',
+            'Cache-Control': 'max-age=86400',
+          },
+        }));
+        await cache.put(CACHE_KEY, imgResponse.clone());
+        return imgResponse;
+      } else {
+        return addCorsHeaders(new Response(JSON.stringify({ error: "No image generated" }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
     } catch (err: any) {
       console.error("Image generation failed:", err);
       return addCorsHeaders(new Response(JSON.stringify({ error: "Unexpected error generating image" }), {
